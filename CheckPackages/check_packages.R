@@ -194,4 +194,47 @@ writeLines(csv_lines, con, useBytes = TRUE)
 close(con)
 cat("============================================================\n")
 cat("CSV出力完了: ", output_file, "\n")
+
+# ----------------------------------------------------------
+# 依存パッケージ一覧 CSV 出力
+# 全パッケージの再帰依存（直接＋間接）を集約し、
+# check_target_packages.txt 記載のパッケージを除外後、
+# アルファベット順に並べてバージョンを出力
+# ----------------------------------------------------------
+all_dep_pkgs <- character(0)
+for (pkg in valid_pkgs) {
+  rec <- all_recursive_deps[[pkg]]
+  if (!is.null(rec) && length(rec) > 0) {
+    all_dep_pkgs <- c(all_dep_pkgs, rec)
+  }
+}
+all_dep_pkgs <- sort(unique(all_dep_pkgs))
+all_dep_pkgs <- all_dep_pkgs[!(all_dep_pkgs %in% pkgs)]
+
+dep_output_file <- file.path(script_dir, "dependency_info.csv")
+
+dep_csv_header <- paste0(
+  '"パッケージ名",',
+  '"バージョン（', today_str, '時点のCRANの最新）"'
+)
+
+dep_csv_lines <- c(dep_csv_header)
+
+for (dep_pkg in all_dep_pkgs) {
+  if (dep_pkg %in% rownames(ap)) {
+    dep_ver <- ap[dep_pkg, "Version"]
+    dep_ver <- ifelse(is.na(dep_ver), "", dep_ver)
+  } else {
+    dep_ver <- "(CRANに存在しません)"
+  }
+  dep_row <- paste0('"', dep_pkg, '","', dep_ver, '"')
+  dep_csv_lines <- c(dep_csv_lines, dep_row)
+}
+
+dep_csv_lines <- enc2utf8(dep_csv_lines)
+con2 <- file(dep_output_file, open = "wb")
+writeBin(as.raw(c(0xEF, 0xBB, 0xBF)), con2)
+writeLines(dep_csv_lines, con2, useBytes = TRUE)
+close(con2)
+cat("依存パッケージ一覧CSV出力完了 (", length(all_dep_pkgs), "件 ): ", dep_output_file, "\n")
 cat("=== 照会完了 ===\n")
