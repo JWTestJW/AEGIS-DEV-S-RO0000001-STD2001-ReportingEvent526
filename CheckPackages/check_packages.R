@@ -39,50 +39,84 @@ cat("  ", paste(pkgs, collapse = ", "), "\n\n")
 # リポジトリの指定（RSPM の latest を使用）
 # CRANを使う場合："https://cran.r-project.org"
 # ----------------------------------------------------------
-repo <- "https://packagemanager.posit.co/cran/latest"
+cran_repo <- "https://packagemanager.posit.co/cran/latest"
+internal_repo <- "https://aegisrspm.internal.onecloudlabo.com/aegis-R4.5.1-dev/latest"
 
 # ----------------------------------------------------------
 # パッケージデータベースの取得
 # ----------------------------------------------------------
 cat("=== リポジトリからパッケージ情報を取得中... ===\n")
-cat("リポジトリ: ", repo, "\n\n")
-ap <- available.packages(repos = repo)
-cat("取得完了。総パッケージ数: ", nrow(ap), "\n\n")
+cat("CRANリポジトリ: ", cran_repo, "\n")
+ap_cran <- available.packages(repos = cran_repo)
+cat("取得完了 (CRAN)。総パッケージ数: ", nrow(ap_cran), "\n\n")
+
+cat("内部リポジトリ: ", internal_repo, "\n")
+ap_internal <- available.packages(repos = internal_repo)
+cat("取得完了 (内部)。総パッケージ数: ", nrow(ap_internal), "\n\n")
 
 # ----------------------------------------------------------
 # 存在チェック（CRANに存在しないパッケージを検出）
 # ----------------------------------------------------------
-not_found <- pkgs[!(pkgs %in% rownames(ap))]
-if (length(not_found) > 0) {
+in_cran <- pkgs %in% rownames(ap_cran)
+in_internal <- pkgs %in% rownames(ap_internal)
+
+pkg_source <- setNames(rep("NOT_FOUND", length(pkgs)), pkgs)
+pkg_source[in_cran] <- "CRAN"
+pkg_source[!in_cran & in_internal] <- "INTERNAL"
+
+not_in_cran <- pkgs[!in_cran]
+if (length(not_in_cran) > 0) {
   cat("[警告] 以下のパッケージはCRANに存在しません:\n")
-  cat("  ", paste(not_found, collapse = ", "), "\n\n")
+  cat("  ", paste(not_in_cran, collapse = ", "), "\n\n")
 }
-valid_pkgs <- pkgs[pkgs %in% rownames(ap)]
+
+not_found_anywhere <- names(pkg_source)[pkg_source == "NOT_FOUND"]
+if (length(not_found_anywhere) > 0) {
+  cat("[警告] 以下のパッケージはCRAN/内部リポジトリの両方に存在しません:\n")
+  cat("  ", paste(not_found_anywhere, collapse = ", "), "\n\n")
+}
 
 # ----------------------------------------------------------
 # 依存情報の取得
 # ----------------------------------------------------------
-get_dep <- function(target_pkgs, which_field, recursive_flag) {
+get_dep <- function(target_pkgs, db, which_field, recursive_flag) {
   if (length(target_pkgs) == 0) return(setNames(vector("list", 0), character(0)))
   tools::package_dependencies(
     target_pkgs,
-    db = ap,
+    db = db,
     which = which_field,
     recursive = recursive_flag
   )
 }
 
-# 直接依存
-direct_depends <- get_dep(valid_pkgs, "Depends", FALSE)
-direct_imports <- get_dep(valid_pkgs, "Imports", FALSE)
-direct_linkingto <- get_dep(valid_pkgs, "LinkingTo", FALSE)
+# パッケージごとに参照先リポジトリを切り替えて依存を取得
+direct_depends <- setNames(vector("list", length(pkgs)), pkgs)
+direct_imports <- setNames(vector("list", length(pkgs)), pkgs)
+direct_linkingto <- setNames(vector("list", length(pkgs)), pkgs)
+all_recursive_deps <- setNames(vector("list", length(pkgs)), pkgs)
 
-# 再帰依存（Depends + Imports + LinkingTo を起点）
-all_recursive_deps <- get_dep(
-  valid_pkgs,
-  c("Depends", "Imports", "LinkingTo"),
-  TRUE
-)
+for (pkg in pkgs) {
+  src <- pkg_source[[pkg]]
+  if (src == "NOT_FOUND") {
+    direct_depends[[pkg]] <- character(0)
+    direct_imports[[pkg]] <- character(0)
+    direct_linkingto[[pkg]] <- character(0)
+    all_recursive_deps[[pkg]] <- character(0)
+    next
+  }
+
+  dep_db <- if (src == "CRAN") ap_cran else ap_internal
+
+  d <- get_dep(pkg, dep_db, "Depends", FALSE)[[pkg]]
+  i <- get_dep(pkg, dep_db, "Imports", FALSE)[[pkg]]
+  l <- get_dep(pkg, dep_db, "LinkingTo", FALSE)[[pkg]]
+  r <- get_dep(pkg, dep_db, c("Depends", "Imports", "LinkingTo"), TRUE)[[pkg]]
+
+  direct_depends[[pkg]] <- if (is.null(d)) character(0) else d
+  direct_imports[[pkg]] <- if (is.null(i)) character(0) else i
+  direct_linkingto[[pkg]] <- if (is.null(l)) character(0) else l
+  all_recursive_deps[[pkg]] <- if (is.null(r)) character(0) else r
+}
 
 collapse_or_none <- function(x) {
   if (length(x) == 0) "(なし)" else paste(sort(unique(x)), collapse = ", ")
@@ -99,12 +133,18 @@ for (pkg in pkgs) {
   cat("------------------------------------------------------------\n")
   cat("【パッケージ名】", pkg, "\n")
 
-  if (!(pkg %in% valid_pkgs)) {
-    cat("  ※ CRANに存在しません\n\n")
+  src <- pkg_source[[pkg]]
+
+  if (src == "NOT_FOUND") {
+    cat("  ※ CRAN/内部リポジトリに存在しません\n\n")
     next
   }
 
-  pkg_version <- ap[pkg, "Version"]
+  pkg_version <- if (src == "CRAN") ap_cran[pkg, "Version"] else ap_internal[pkg, "Version"]
+
+  if (src == "INTERNAL") {
+    cat("  ※ CRANに存在しないため、内部リポジトリで依存を取得\n")
+  }
 
   depends <- direct_depends[[pkg]]
   if (is.null(depends)) depends <- character(0)
@@ -153,7 +193,9 @@ csv_header <- paste0(
 csv_lines <- c(csv_header)
 
 for (pkg in pkgs) {
-  if (!(pkg %in% valid_pkgs)) {
+  src <- pkg_source[[pkg]]
+
+  if (src == "NOT_FOUND") {
     row <- paste0(
       '"', pkg, '",',
       '"(CRANに存在しません)",',
@@ -163,7 +205,7 @@ for (pkg in pkgs) {
       '""'
     )
   } else {
-    pkg_version <- ap[pkg, "Version"]
+    pkg_version <- if (src == "CRAN") ap_cran[pkg, "Version"] else "(CRANに存在しません)"
     depends <- direct_depends[[pkg]]
     if (is.null(depends)) depends <- character(0)
     imports <- direct_imports[[pkg]]
@@ -202,7 +244,7 @@ cat("CSV出力完了: ", output_file, "\n")
 # アルファベット順に並べてバージョンを出力
 # ----------------------------------------------------------
 all_dep_pkgs <- character(0)
-for (pkg in valid_pkgs) {
+for (pkg in pkgs) {
   rec <- all_recursive_deps[[pkg]]
   if (!is.null(rec) && length(rec) > 0) {
     all_dep_pkgs <- c(all_dep_pkgs, rec)
@@ -221,8 +263,8 @@ dep_csv_header <- paste0(
 dep_csv_lines <- c(dep_csv_header)
 
 for (dep_pkg in all_dep_pkgs) {
-  if (dep_pkg %in% rownames(ap)) {
-    dep_ver <- ap[dep_pkg, "Version"]
+  if (dep_pkg %in% rownames(ap_cran)) {
+    dep_ver <- ap_cran[dep_pkg, "Version"]
     dep_ver <- ifelse(is.na(dep_ver), "", dep_ver)
   } else {
     dep_ver <- "(CRANに存在しません)"
