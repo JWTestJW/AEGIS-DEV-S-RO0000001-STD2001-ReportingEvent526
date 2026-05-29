@@ -29,7 +29,7 @@
 "colorspace","2.1-2"
 "commonmark","2.0.0"
 "conflicted","1.2.0"
-"corrplot","(内部リポジトリに存在しません)"
+"corrplot","0.95"
 "cowplot","1.2.0"
 "cpp11","0.5.2"
 "crayon","1.5.3"
